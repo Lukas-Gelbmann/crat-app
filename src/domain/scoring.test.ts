@@ -1,22 +1,19 @@
 import { describe, it, expect } from "vitest";
-import { createAssessment, updateThread, type Assessment } from "./assessment";
-import { categoryScore, overallScore, toScore } from "./scoring";
 import {
-  applyEvaluation,
-  completeThread,
-  markNotApplicable,
-  startThread,
-  submitAnswer,
-  type QuestionThread,
-} from "./thread";
+  answerQuestion,
+  applyQuestionEvaluation,
+  completeQuestion,
+  createAssessment,
+  markQuestionNotApplicable,
+  type Assessment,
+} from "./assessment";
+import { categoryScore, overallScore, toScore } from "./scoring";
 import type { Score } from "./types";
 
-function scored(score: Score) {
-  return (thread: QuestionThread) => {
-    let t = submitAnswer(startThread(thread, "alice"), "alice", "answer");
-    t = applyEvaluation(t, { decision: "complete" });
-    return completeThread(t, { finalAnswer: "answer", notes: "", score });
-  };
+function score(assessment: Assessment, questionId: string, value: Score) {
+  let a = answerQuestion(assessment, questionId, "alice", "answer");
+  a = applyQuestionEvaluation(a, questionId, { decision: "complete" });
+  return completeQuestion(a, questionId, { finalAnswer: "answer", notes: "", score: value });
 }
 
 function create(): Assessment {
@@ -55,20 +52,18 @@ describe("categoryScore", () => {
 
   it("averages completed questions and excludes not applicable ones", () => {
     let assessment = create();
-    assessment = updateThread(assessment, "ac_001", scored(4));
-    assessment = updateThread(assessment, "ac_002", scored(2));
-    assessment = updateThread(assessment, "ac_003", scored(3));
-    assessment = updateThread(assessment, "ac_004", (t) =>
-      markNotApplicable(t, "alice", "n/a"),
-    );
+    assessment = score(assessment, "ac_001", 4);
+    assessment = score(assessment, "ac_002", 2);
+    assessment = score(assessment, "ac_003", 3);
+    assessment = markQuestionNotApplicable(assessment, "ac_004", "alice", "n/a");
     expect(categoryScore(assessment, "access-control")).toBe(3);
   });
 
   it("rounds to one decimal", () => {
     let assessment = create();
-    assessment = updateThread(assessment, "ac_001", scored(4));
-    assessment = updateThread(assessment, "ac_002", scored(4));
-    assessment = updateThread(assessment, "ac_003", scored(5));
+    assessment = score(assessment, "ac_001", 4);
+    assessment = score(assessment, "ac_002", 4);
+    assessment = score(assessment, "ac_003", 5);
     expect(categoryScore(assessment, "access-control")).toBe(4.3);
   });
 });
@@ -78,16 +73,16 @@ describe("overallScore", () => {
     let assessment = create();
     // access-control: 5 questions averaging 2
     for (const id of ["ac_001", "ac_002", "ac_003", "ac_004", "ac_005"]) {
-      assessment = updateThread(assessment, id, scored(2));
+      assessment = score(assessment, id, 2);
     }
     // data-protection: 1 question with 5
-    assessment = updateThread(assessment, "dp_001", scored(5));
+    assessment = score(assessment, "dp_001", 5);
     expect(overallScore(assessment)).toBe(3.5);
   });
 
   it("ignores categories without scores and is null when nothing is scored", () => {
     expect(overallScore(create())).toBeNull();
-    const assessment = updateThread(create(), "ac_001", scored(4));
+    const assessment = score(create(), "ac_001", 4);
     expect(overallScore(assessment)).toBe(4);
   });
 });

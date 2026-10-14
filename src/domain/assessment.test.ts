@@ -1,24 +1,20 @@
 import { describe, it, expect } from "vitest";
 import {
   AssessmentError,
+  answerQuestion,
+  applyQuestionEvaluation,
+  completeQuestion,
   createAssessment,
+  currentQuestion,
   getProgress,
   getThread,
   isAssessmentComplete,
-  nextQuestionFor,
+  markQuestionNotApplicable,
   questionIds,
-  updateThread,
+  reopenQuestion,
+  skipQuestion,
   type Assessment,
 } from "./assessment";
-import {
-  applyEvaluation,
-  completeThread,
-  markNotApplicable,
-  skipThread,
-  startThread,
-  submitAnswer,
-  type QuestionThread,
-} from "./thread";
 
 const alice = "alice";
 const bob = "bob";
@@ -27,10 +23,21 @@ function create(categoryIds: string[]): Assessment {
   return createAssessment({ id: "a1", organizationId: "org1", categoryIds });
 }
 
-function complete(thread: QuestionThread, userId: string): QuestionThread {
-  let t = submitAnswer(startThread(thread, userId), userId, "answer");
-  t = applyEvaluation(t, { decision: "complete" });
-  return completeThread(t, { finalAnswer: "answer", notes: "", score: 3 });
+function finish(assessment: Assessment, questionId: string): Assessment {
+  let a = answerQuestion(assessment, questionId, alice, "answer");
+  a = applyQuestionEvaluation(a, questionId, { decision: "complete" });
+  return completeQuestion(a, questionId, { finalAnswer: "answer", notes: "", score: 3 });
+}
+
+function expectError(fn: () => unknown, code: AssessmentError["code"]) {
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toBeInstanceOf(AssessmentError);
+    expect((error as AssessmentError).code).toBe(code);
+    return;
+  }
+  throw new Error(`Expected AssessmentError ${code}`);
 }
 
 describe("createAssessment", () => {
@@ -51,38 +58,123 @@ describe("createAssessment", () => {
   });
 
   it("rejects unknown or missing categories", () => {
-    expect(() => create(["nope"])).toThrow(AssessmentError);
-    expect(() => create([])).toThrow(/at least one category/);
+    expectError(() => create(["nope"]), "unknown_category");
+    expectError(() => create([]), "no_categories");
   });
 });
 
-describe("updateThread", () => {
-  it("applies a transition without mutating the original", () => {
-    const before = create(["access-control"]);
-    const after = updateThread(before, "ac_001", (t) => startThread(t, alice));
-    expect(getThread(after, "ac_001").status).toBe("answering");
-    expect(getThread(before, "ac_001").status).toBe("open");
+describe("category chat room", () => {
+  it("starts with the first question of each category", () => {
+    const assessment = create(["access-control", "data-protection"]);
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_001");
+    expect(currentQuestion(assessment, "data-protection")).toBe("dp_001");
+  });
+
+  it("moves through the questions strictly in order", () => {
+    let assessment = create(["access-control"]);
+    assessment = finish(assessment, "ac_001");
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_002");
+  });
+
+  it("stays on a question while it is discussed, across users", () => {
+    let assessment = answerQuestion(create(["access-control"]), "ac_001", alice, "Passwords.");
+    assessment = applyQuestionEvaluation(assessment, "ac_001", {
+      decision: "needs_follow_up",
+      followUpQuestion: "Do you use MFA?",
+    });
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_001");
+
+    assessment = answerQuestion(assessment, "ac_001", bob, "Yes.");
+    expect(getThread(assessment, "ac_001").exchanges.map((e) => e.answer?.authorId)).toEqual([
+      alice,
+      bob,
+    ]);
+  });
+
+  it("rejects actions on any question other than the current one", () => {
+    const assessment = create(["access-control"]);
+    expectError(() => answerQuestion(assessment, "ac_002", alice, "x"), "not_current");
+    expectError(() => skipQuestion(assessment, "ac_003"), "not_current");
+    expectError(() => markQuestionNotApplicable(assessment, "ac_004", alice, "n/a"), "not_current");
+  });
+
+  it("rejects a stale answer after the room moved on", () => {
+    const assessment = finish(create(["access-control"]), "ac_001");
+    expectError(() => answerQuestion(assessment, "ac_001", bob, "late"), "not_current");
+  });
+
+  it("works on categories independently", () => {
+    let assessment = create(["access-control", "data-protection"]);
+    assessment = finish(assessment, "dp_001");
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_001");
+    expect(currentQuestion(assessment, "data-protection")).toBe("dp_002");
+  });
+
+  it("comes back to skipped questions after the open ones, in skip order", () => {
+    let assessment = create(["access-control"]);
+    assessment = skipQuestion(assessment, "ac_001");
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_002");
+    assessment = skipQuestion(assessment, "ac_002");
+    for (const id of ["ac_003", "ac_004", "ac_005"]) {
+      assessment = finish(assessment, id);
+    }
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_001");
+
+    // Skipping again moves it behind the other skipped question.
+    assessment = skipQuestion(assessment, "ac_001");
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_002");
+  });
+
+  it("resumes a skipped question with its earlier answers", () => {
+    let assessment = answerQuestion(create(["access-control"]), "ac_001", alice, "Passwords.");
+    assessment = applyQuestionEvaluation(assessment, "ac_001", {
+      decision: "needs_follow_up",
+      followUpQuestion: "Do you use MFA?",
+    });
+    assessment = skipQuestion(assessment, "ac_001");
+    for (const id of ["ac_002", "ac_003", "ac_004", "ac_005"]) {
+      assessment = finish(assessment, id);
+    }
+    assessment = answerQuestion(assessment, "ac_001", bob, "Yes.");
+    expect(getThread(assessment, "ac_001").exchanges).toHaveLength(2);
+  });
+
+  it("is finished when no question is left", () => {
+    let assessment = create(["access-control"]);
+    for (const id of ["ac_001", "ac_002", "ac_003", "ac_004"]) {
+      assessment = finish(assessment, id);
+    }
+    assessment = markQuestionNotApplicable(assessment, "ac_005", bob, "n/a");
+    expect(currentQuestion(assessment, "access-control")).toBeUndefined();
+  });
+
+  it("puts a reopened question back into the queue without interrupting", () => {
+    let assessment = finish(create(["access-control"]), "ac_001");
+    assessment = answerQuestion(assessment, "ac_002", alice, "x");
+    assessment = reopenQuestion(assessment, "ac_001");
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_002");
+
+    assessment = applyQuestionEvaluation(assessment, "ac_002", { decision: "complete" });
+    assessment = completeQuestion(assessment, "ac_002", { finalAnswer: "x", notes: "", score: 2 });
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_001");
   });
 
   it("rejects questions outside the assessment", () => {
-    const assessment = create(["access-control"]);
-    expect(() => updateThread(assessment, "sa_001", (t) => t)).toThrow(
-      /not part of assessment/,
-    );
+    expectError(() => answerQuestion(create(["access-control"]), "sa_001", alice, "x"), "unknown_question");
   });
 });
 
 describe("progress", () => {
   it("counts statuses overall and per category", () => {
     let assessment = create(["access-control", "data-protection"]);
-    assessment = updateThread(assessment, "ac_001", (t) => complete(t, alice));
-    assessment = updateThread(assessment, "ac_002", (t) => markNotApplicable(t, alice, "n/a"));
-    assessment = updateThread(assessment, "ac_003", (t) => skipThread(t, alice));
-    assessment = updateThread(assessment, "dp_001", (t) => startThread(t, bob));
+    assessment = finish(assessment, "ac_001");
+    assessment = markQuestionNotApplicable(assessment, "ac_002", alice, "n/a");
+    assessment = skipQuestion(assessment, "ac_003");
+    assessment = answerQuestion(assessment, "dp_001", bob, "x");
 
     expect(getProgress(assessment)).toEqual({
       open: 6,
-      answering: 1,
+      active: 1,
       skipped: 1,
       not_applicable: 1,
       completed: 1,
@@ -98,50 +190,15 @@ describe("progress", () => {
 
   it("is complete only when every question is completed or not applicable", () => {
     let assessment = create(["access-control"]);
-    for (const id of questionIds(assessment).slice(0, 4)) {
-      assessment = updateThread(assessment, id, (t) => complete(t, alice));
+    for (const id of ["ac_001", "ac_002", "ac_003", "ac_004"]) {
+      assessment = finish(assessment, id);
     }
     expect(isAssessmentComplete(assessment)).toBe(false);
 
-    assessment = updateThread(assessment, "ac_005", (t) => skipThread(t, alice));
+    assessment = skipQuestion(assessment, "ac_005");
     expect(isAssessmentComplete(assessment)).toBe(false);
 
-    assessment = updateThread(assessment, "ac_005", (t) => markNotApplicable(t, bob, "n/a"));
+    assessment = markQuestionNotApplicable(assessment, "ac_005", bob, "n/a");
     expect(isAssessmentComplete(assessment)).toBe(true);
-  });
-});
-
-describe("nextQuestionFor", () => {
-  it("suggests the first open question in the user's categories", () => {
-    const assessment = create(["access-control", "data-protection"]);
-    expect(nextQuestionFor(assessment, alice, ["data-protection"])).toBe("dp_001");
-  });
-
-  it("resumes the user's own thread first", () => {
-    const assessment = updateThread(create(["access-control"]), "ac_004", (t) =>
-      startThread(t, alice),
-    );
-    expect(nextQuestionFor(assessment, alice, ["access-control"])).toBe("ac_004");
-  });
-
-  it("skips threads locked by others and comes back to skipped ones last", () => {
-    let assessment = create(["access-control"]);
-    assessment = updateThread(assessment, "ac_001", (t) => skipThread(t, alice));
-    assessment = updateThread(assessment, "ac_002", (t) => startThread(t, bob));
-    expect(nextQuestionFor(assessment, alice, ["access-control"])).toBe("ac_003");
-
-    for (const id of ["ac_003", "ac_004", "ac_005"]) {
-      assessment = updateThread(assessment, id, (t) => complete(t, alice));
-    }
-    expect(nextQuestionFor(assessment, alice, ["access-control"])).toBe("ac_001");
-  });
-
-  it("returns undefined when nothing is left or no category matches", () => {
-    let assessment = create(["access-control"]);
-    expect(nextQuestionFor(assessment, alice, ["data-protection"])).toBeUndefined();
-    for (const id of questionIds(assessment)) {
-      assessment = updateThread(assessment, id, (t) => complete(t, alice));
-    }
-    expect(nextQuestionFor(assessment, alice, ["access-control"])).toBeUndefined();
   });
 });
