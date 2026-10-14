@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "title": "CRAT – Cybersecurity Risk Assessment Tool",
+    "description": "Automatisierte Cybersecurity-Compliance-Interviews mit Rückfragen und Bewertung."
+  },
+  "header": {
+    "home": "CRAT Startseite",
+    "language": "Sprache"
+  },
+  "languages": {
+    "en": "English",
+    "de": "Deutsch"
+  },
+  "home": {
+    "title": "CRAT",
+    "description": "Cybersecurity Risk Assessment Tool. Beantworte Compliance-Fragen im Gespräch, erhalte Rückfragen bei unvollständigen Antworten und bekomme einen bewerteten Bericht mit Empfehlungen."
+  }
+}
