@@ -1,7 +1,22 @@
-import { catalog } from "./catalog";
-import { createThread, type QuestionThread, type ThreadStatus } from "./thread";
+import { catalog, getCategoryOfQuestion } from "./catalog";
+import {
+  activateThread,
+  applyEvaluation,
+  completeThread,
+  createThread,
+  markNotApplicable,
+  reopenThread,
+  skipThread,
+  submitAnswer,
+  type Evaluation,
+  type QuestionThread,
+  type ThreadResult,
+  type ThreadStatus,
+} from "./thread";
 import type { CategoryId, QuestionId, UserId } from "./types";
 
+// Each category is one shared chat room: everyone responsible for it works
+// through its questions strictly in order, one current question at a time.
 export type Assessment = {
   id: string;
   organizationId: string;
@@ -18,7 +33,11 @@ export type Progress = Record<ThreadStatus, number> & {
 
 export class AssessmentError extends Error {
   constructor(
-    readonly code: "unknown_category" | "no_categories" | "unknown_question",
+    readonly code:
+      | "unknown_category"
+      | "no_categories"
+      | "unknown_question"
+      | "not_current",
     message: string,
   ) {
     super(message);
@@ -85,17 +104,96 @@ export function getThread(
   return thread;
 }
 
-// Applies a thread transition, e.g. updateThread(a, id, (t) => startThread(t, user)).
-export function updateThread(
+// The question the category's chat room is on: the active one, otherwise the
+// first open question in catalog order, otherwise skipped questions in the
+// order they were skipped. Undefined once the category is finished.
+export function currentQuestion(
+  assessment: Assessment,
+  categoryId: CategoryId,
+): QuestionId | undefined {
+  const threads = questionIds(assessment, [categoryId]).map((id) =>
+    getThread(assessment, id),
+  );
+  const skipped = threads
+    .flatMap((t) => (t.status === "skipped" ? [t] : []))
+    .sort((a, b) => a.skipOrder - b.skipOrder);
+  return (
+    threads.find((t) => t.status === "active") ??
+    threads.find((t) => t.status === "open") ??
+    skipped[0]
+  )?.questionId;
+}
+
+// Commands. Each takes the question id the user acted on and rejects it if the
+// room has moved on in the meantime (e.g. two people answering at once).
+
+export function answerQuestion(
   assessment: Assessment,
   questionId: QuestionId,
-  transition: (thread: QuestionThread) => QuestionThread,
+  userId: UserId,
+  text: string,
 ): Assessment {
-  const thread = transition(getThread(assessment, questionId));
-  return {
-    ...assessment,
-    threads: { ...assessment.threads, [questionId]: thread },
-  };
+  return updateCurrent(assessment, questionId, (thread) =>
+    submitAnswer(
+      thread.status === "active" ? thread : activateThread(thread),
+      userId,
+      text,
+    ),
+  );
+}
+
+export function applyQuestionEvaluation(
+  assessment: Assessment,
+  questionId: QuestionId,
+  evaluation: Evaluation,
+): Assessment {
+  return updateCurrent(assessment, questionId, (thread) =>
+    applyEvaluation(thread, evaluation),
+  );
+}
+
+export function completeQuestion(
+  assessment: Assessment,
+  questionId: QuestionId,
+  result: ThreadResult,
+): Assessment {
+  return updateCurrent(assessment, questionId, (thread) =>
+    completeThread(thread, result),
+  );
+}
+
+export function skipQuestion(
+  assessment: Assessment,
+  questionId: QuestionId,
+): Assessment {
+  const lastSkip = Math.max(
+    0,
+    ...Object.values(assessment.threads).map((t) =>
+      t.status === "skipped" ? t.skipOrder : 0,
+    ),
+  );
+  return updateCurrent(assessment, questionId, (thread) =>
+    skipThread(thread, lastSkip + 1),
+  );
+}
+
+export function markQuestionNotApplicable(
+  assessment: Assessment,
+  questionId: QuestionId,
+  userId: UserId,
+  reason: string,
+): Assessment {
+  return updateCurrent(assessment, questionId, (thread) =>
+    markNotApplicable(thread, userId, reason),
+  );
+}
+
+// Reopening works on any finished question; it rejoins the queue as open.
+export function reopenQuestion(
+  assessment: Assessment,
+  questionId: QuestionId,
+): Assessment {
+  return setThread(assessment, reopenThread(getThread(assessment, questionId)));
 }
 
 export function getProgress(
@@ -104,7 +202,7 @@ export function getProgress(
 ): Progress {
   const progress: Progress = {
     open: 0,
-    answering: 0,
+    active: 0,
     skipped: 0,
     not_applicable: 0,
     completed: 0,
@@ -124,20 +222,26 @@ export function isAssessmentComplete(assessment: Assessment): boolean {
   return progress.done === progress.total;
 }
 
-// The question a user should work on next within their responsible categories:
-// a thread they are already answering, then open questions, then skipped ones.
-// Threads locked by other users are never suggested.
-export function nextQuestionFor(
+function updateCurrent(
   assessment: Assessment,
-  userId: UserId,
-  responsibleCategoryIds: readonly CategoryId[],
-): QuestionId | undefined {
-  const threads = questionIds(assessment, responsibleCategoryIds).map((id) =>
-    getThread(assessment, id),
-  );
-  return (
-    threads.find((t) => t.status === "answering" && t.assigneeId === userId) ??
-    threads.find((t) => t.status === "open") ??
-    threads.find((t) => t.status === "skipped")
-  )?.questionId;
+  questionId: QuestionId,
+  transition: (thread: QuestionThread) => QuestionThread,
+): Assessment {
+  const thread = getThread(assessment, questionId);
+  const categoryId = getCategoryOfQuestion(questionId)!.id;
+  const current = currentQuestion(assessment, categoryId);
+  if (current !== questionId) {
+    throw new AssessmentError(
+      "not_current",
+      `Question ${questionId} is not the current question (current: ${current ?? "none"})`,
+    );
+  }
+  return setThread(assessment, transition(thread));
+}
+
+function setThread(assessment: Assessment, thread: QuestionThread): Assessment {
+  return {
+    ...assessment,
+    threads: { ...assessment.threads, [thread.questionId]: thread },
+  };
 }

@@ -21,18 +21,24 @@ export type Evaluation =
   | { decision: "complete" }
   | { decision: "needs_follow_up"; followUpQuestion: string };
 
-// "answering" locks the thread to one assignee. `pending` says what happens next:
-// the assignee answers, or the answer is evaluated / finalized (LLM steps).
+// "active" is the question currently discussed in its category's chat room.
+// `pending` says what happens next: someone answers, or the answer is
+// evaluated / finalized (LLM steps).
 export type QuestionThread =
   | { status: "open"; questionId: QuestionId; exchanges: Exchange[] }
   | {
-      status: "answering";
+      status: "active";
       questionId: QuestionId;
       exchanges: Exchange[];
-      assigneeId: UserId;
       pending: "answer" | "evaluation" | "finalization";
     }
-  | { status: "skipped"; questionId: QuestionId; exchanges: Exchange[] }
+  | {
+      status: "skipped";
+      questionId: QuestionId;
+      exchanges: Exchange[];
+      // Position in the skip queue; skipped questions come back in this order.
+      skipOrder: number;
+    }
   | {
       status: "not_applicable";
       questionId: QuestionId;
@@ -45,19 +51,15 @@ export type QuestionThread =
       questionId: QuestionId;
       exchanges: Exchange[];
       result: ThreadResult;
-      completedBy: UserId;
     };
 
 export type ThreadStatus = QuestionThread["status"];
 
-type Answering = Extract<QuestionThread, { status: "answering" }>;
+type Active = Extract<QuestionThread, { status: "active" }>;
 
 export class ThreadError extends Error {
   constructor(
-    readonly code:
-      | "invalid_transition"
-      | "not_assignee"
-      | "empty_text",
+    readonly code: "invalid_transition" | "empty_text",
     message: string,
   ) {
     super(message);
@@ -73,23 +75,19 @@ export function followUpCount(thread: QuestionThread): number {
   return thread.exchanges.filter((e) => e.prompt.kind === "follow_up").length;
 }
 
-// Locks the thread for `userId`. Skipped threads resume where they left off.
-export function startThread(
-  thread: QuestionThread,
-  userId: UserId,
-): QuestionThread {
+// Makes the question the active one. Skipped threads resume where they left off.
+export function activateThread(thread: QuestionThread): QuestionThread {
   if (thread.status !== "open" && thread.status !== "skipped") {
-    throw invalid(thread, "start");
+    throw invalid(thread, "activate");
   }
   const exchanges: Exchange[] =
     thread.exchanges.length > 0
       ? thread.exchanges
       : [{ prompt: { kind: "catalog" }, answer: null }];
   return {
-    status: "answering",
+    status: "active",
     questionId: thread.questionId,
     exchanges,
-    assigneeId: userId,
     pending: "answer",
   };
 }
@@ -99,7 +97,7 @@ export function submitAnswer(
   userId: UserId,
   text: string,
 ): QuestionThread {
-  const current = requireAnswering(thread, userId, "answer", "submit an answer");
+  const current = requirePending(thread, "answer", "submit an answer");
   const trimmed = requireText(text, "Answer");
   const exchanges = current.exchanges.map((exchange, index) =>
     index === current.exchanges.length - 1
@@ -143,23 +141,25 @@ export function completeThread(
     questionId: current.questionId,
     exchanges: current.exchanges,
     result: { ...result, finalAnswer: result.finalAnswer.trim() },
-    completedBy: current.assigneeId,
   };
 }
 
-// "Come back later": releases the lock and keeps the answers given so far.
+// "Come back later": moves the question to the back of the skip queue and
+// keeps the answers given so far.
 export function skipThread(
   thread: QuestionThread,
-  userId: UserId,
+  skipOrder: number,
 ): QuestionThread {
-  if (thread.status === "open") {
-    return { status: "skipped", questionId: thread.questionId, exchanges: [] };
+  if (thread.status === "active") {
+    requirePending(thread, "answer", "skip");
+  } else if (thread.status !== "open" && thread.status !== "skipped") {
+    throw invalid(thread, "skip");
   }
-  const current = requireAnswering(thread, userId, "answer", "skip");
   return {
     status: "skipped",
-    questionId: current.questionId,
-    exchanges: current.exchanges,
+    questionId: thread.questionId,
+    exchanges: thread.exchanges,
+    skipOrder,
   };
 }
 
@@ -168,8 +168,8 @@ export function markNotApplicable(
   userId: UserId,
   reason: string,
 ): QuestionThread {
-  if (thread.status === "answering") {
-    requireAnswering(thread, userId, "answer", "mark as not applicable");
+  if (thread.status === "active") {
+    requirePending(thread, "answer", "mark as not applicable");
   } else if (thread.status !== "open" && thread.status !== "skipped") {
     throw invalid(thread, "mark as not applicable");
   }
@@ -188,34 +188,18 @@ export function reopenThread(thread: QuestionThread): QuestionThread {
   if (thread.status !== "completed" && thread.status !== "not_applicable") {
     throw invalid(thread, "reopen");
   }
-  return { status: "open", questionId: thread.questionId, exchanges: [] };
+  return createThread(thread.questionId);
 }
 
 function requirePending(
   thread: QuestionThread,
-  pending: Answering["pending"],
+  pending: Active["pending"],
   action: string,
-): Answering {
-  if (thread.status !== "answering" || thread.pending !== pending) {
+): Active {
+  if (thread.status !== "active" || thread.pending !== pending) {
     throw invalid(thread, action);
   }
   return thread;
-}
-
-function requireAnswering(
-  thread: QuestionThread,
-  userId: UserId,
-  pending: Answering["pending"],
-  action: string,
-): Answering {
-  const current = requirePending(thread, pending, action);
-  if (current.assigneeId !== userId) {
-    throw new ThreadError(
-      "not_assignee",
-      `Question ${thread.questionId} is being answered by another user`,
-    );
-  }
-  return current;
 }
 
 function requireText(text: string, label: string): string {
@@ -226,8 +210,8 @@ function requireText(text: string, label: string): string {
 
 function invalid(thread: QuestionThread, action: string): ThreadError {
   const state =
-    thread.status === "answering"
-      ? `answering (pending ${thread.pending})`
+    thread.status === "active"
+      ? `active (pending ${thread.pending})`
       : thread.status;
   return new ThreadError(
     "invalid_transition",
