@@ -8,6 +8,8 @@
 ## Commands
 - `npm run check`: lint, typecheck, tests and build; run before every PR
 - `npm run test`: unit tests
+- `npm run test:llm`: prompts against the configured real LLM (opt-in, needs Ollama
+  or an API key; not part of `check` or CI)
 - `npx playwright test`: E2E tests
 
 ## Conventions
@@ -37,6 +39,17 @@
   (`recordCategoryResults`). Reopening a question discards its category's scores.
 - `scoring.ts`: `toScore` for untrusted (LLM) scores; averages exclude not-applicable
   questions, categories weigh equally overall.
+
+## LLM (`src/llm/`) and interview service (`src/interview/`)
+- `LlmClient` (`client.ts`) is provider-neutral: one prompt in, one zod-validated object
+  out. Adapters: `openai-compatible.ts` (Ollama, LM Studio, OpenRouter) and
+  `anthropic.ts` (official SDK). Build one with `createLlmClient(getServerEnv())`.
+- `tasks.ts`: `evaluateAnswer` (fails open: accepts the answer if the LLM keeps failing)
+  and `scoreCategory` (fails closed: throws, never invents a score). Make every schema
+  field required; small local models skip optional ones.
+- `src/interview/service.ts` combines domain commands with the LLM tasks and scores
+  categories as soon as they are finished. UI and API code should call this service.
+- Unit tests never call a real model: use `createFakeLlm` from `src/llm/fake.ts`.
 
 ## Workflow per feature
 `main` is protected: changes go in via PR only, and the CI check `test` must pass before merging.
