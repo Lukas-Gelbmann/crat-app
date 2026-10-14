@@ -1,12 +1,21 @@
 import { z } from "zod";
 
+const defaultModels = {
+  "openai-compatible": "llama3.1:8b",
+  anthropic: "claude-opus-5-5",
+} as const;
+
 const serverEnvSchema = z
   .object({
     LLM_PROVIDER: z
       .enum(["openai-compatible", "anthropic"])
       .default("openai-compatible"),
+    // OpenAI-compatible endpoint: Ollama, LM Studio, OpenRouter, ...
     LLM_BASE_URL: z.url().default("http://localhost:11434/v1"),
-    LLM_MODEL: z.string().min(1).default("llama3.1:8b"),
+    // Defaults depend on the provider, see defaultModels.
+    LLM_MODEL: z.string().min(1).optional(),
+    // Bearer token for OpenAI-compatible endpoints that need one (e.g. OpenRouter).
+    LLM_API_KEY: z.string().min(1).optional(),
     ANTHROPIC_API_KEY: z.string().min(1).optional(),
   })
   .refine(
@@ -15,9 +24,13 @@ const serverEnvSchema = z
       message: "ANTHROPIC_API_KEY is required when LLM_PROVIDER is anthropic",
       path: ["ANTHROPIC_API_KEY"],
     },
-  );
+  )
+  .transform((env) => ({
+    ...env,
+    LLM_MODEL: env.LLM_MODEL ?? defaultModels[env.LLM_PROVIDER],
+  }));
 
-export type ServerEnv = z.infer<typeof serverEnvSchema>;
+export type ServerEnv = z.output<typeof serverEnvSchema>;
 
 export function parseServerEnv(
   source: Record<string, string | undefined>,
