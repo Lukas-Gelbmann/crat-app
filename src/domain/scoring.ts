@@ -1,4 +1,4 @@
-import { getThread, questionIds, type Assessment } from "./assessment";
+import type { Assessment } from "./assessment";
 import type { CategoryId, Score } from "./types";
 
 // Normalizes an untrusted score (e.g. from an LLM): numbers and numeric strings
@@ -14,17 +14,15 @@ export function toScore(value: unknown): Score | undefined {
   return Math.min(5, Math.max(1, Math.round(number))) as Score;
 }
 
-// Average score of completed questions, rounded to one decimal.
-// Not-applicable and unfinished questions are excluded; null if none is scored yet.
+// Average score of the category's scored questions, rounded to one decimal.
+// Not-applicable questions have no result; null until the category is scored.
 export function categoryScore(
   assessment: Assessment,
   categoryId: CategoryId,
 ): number | null {
-  const scores = questionIds(assessment, [categoryId]).flatMap((id) => {
-    const thread = getThread(assessment, id);
-    return thread.status === "completed" ? [thread.result.score] : [];
-  });
-  return average(scores);
+  const results = assessment.categoryResults[categoryId];
+  if (!results) return null;
+  return average(Object.values(results).map((result) => result.score));
 }
 
 // Average of the category scores, so every category weighs the same

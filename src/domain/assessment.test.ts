@@ -3,17 +3,20 @@ import {
   AssessmentError,
   answerQuestion,
   applyQuestionEvaluation,
-  completeQuestion,
+  categoriesAwaitingScoring,
   createAssessment,
   currentQuestion,
   getProgress,
   getThread,
   isAssessmentComplete,
+  isCategoryFinished,
   markQuestionNotApplicable,
   questionIds,
+  recordCategoryResults,
   reopenQuestion,
   skipQuestion,
   type Assessment,
+  type QuestionResult,
 } from "./assessment";
 
 const alice = "alice";
@@ -24,10 +27,25 @@ function create(categoryIds: string[]): Assessment {
 }
 
 function finish(assessment: Assessment, questionId: string): Assessment {
-  let a = answerQuestion(assessment, questionId, alice, "answer");
-  a = applyQuestionEvaluation(a, questionId, { decision: "complete" });
-  return completeQuestion(a, questionId, { finalAnswer: "answer", notes: "", score: 3 });
+  const a = answerQuestion(assessment, questionId, alice, "answer");
+  return applyQuestionEvaluation(a, questionId, { decision: "complete" });
 }
+
+const result: QuestionResult = { finalAnswer: " answer ", notes: "", score: 3 };
+
+// Finishes ac_001–ac_004 and marks ac_005 as not applicable.
+function finishAccessControl(assessment: Assessment): Assessment {
+  let a = assessment;
+  for (const id of ["ac_001", "ac_002", "ac_003", "ac_004"]) a = finish(a, id);
+  return markQuestionNotApplicable(a, "ac_005", bob, "n/a");
+}
+
+const accessControlResults = {
+  ac_001: result,
+  ac_002: result,
+  ac_003: result,
+  ac_004: result,
+};
 
 function expectError(fn: () => unknown, code: AssessmentError["code"]) {
   try {
@@ -155,7 +173,6 @@ describe("category chat room", () => {
     expect(currentQuestion(assessment, "access-control")).toBe("ac_002");
 
     assessment = applyQuestionEvaluation(assessment, "ac_002", { decision: "complete" });
-    assessment = completeQuestion(assessment, "ac_002", { finalAnswer: "x", notes: "", score: 2 });
     expect(currentQuestion(assessment, "access-control")).toBe("ac_001");
   });
 
@@ -188,17 +205,82 @@ describe("progress", () => {
     });
   });
 
-  it("is complete only when every question is completed or not applicable", () => {
+  it("is complete only when every question is done and every category scored", () => {
     let assessment = create(["access-control"]);
     for (const id of ["ac_001", "ac_002", "ac_003", "ac_004"]) {
       assessment = finish(assessment, id);
     }
-    expect(isAssessmentComplete(assessment)).toBe(false);
-
     assessment = skipQuestion(assessment, "ac_005");
     expect(isAssessmentComplete(assessment)).toBe(false);
 
     assessment = markQuestionNotApplicable(assessment, "ac_005", bob, "n/a");
+    expect(isCategoryFinished(assessment, "access-control")).toBe(true);
+    expect(isAssessmentComplete(assessment)).toBe(false);
+
+    assessment = recordCategoryResults(assessment, "access-control", accessControlResults);
     expect(isAssessmentComplete(assessment)).toBe(true);
+  });
+});
+
+describe("category scoring", () => {
+  it("lists finished categories that still need scoring", () => {
+    let assessment = create(["access-control", "data-protection"]);
+    expect(categoriesAwaitingScoring(assessment)).toEqual([]);
+
+    assessment = finishAccessControl(assessment);
+    expect(categoriesAwaitingScoring(assessment)).toEqual(["access-control"]);
+
+    assessment = recordCategoryResults(assessment, "access-control", accessControlResults);
+    expect(categoriesAwaitingScoring(assessment)).toEqual([]);
+  });
+
+  it("stores trimmed results for the completed questions", () => {
+    const assessment = recordCategoryResults(
+      finishAccessControl(create(["access-control"])),
+      "access-control",
+      accessControlResults,
+    );
+    expect(assessment.categoryResults["access-control"]?.ac_001).toEqual({
+      finalAnswer: "answer",
+      notes: "",
+      score: 3,
+    });
+  });
+
+  it("rejects scoring before the category is finished", () => {
+    const assessment = finish(create(["access-control"]), "ac_001");
+    expectError(
+      () => recordCategoryResults(assessment, "access-control", { ac_001: result }),
+      "category_not_finished",
+    );
+  });
+
+  it("requires exactly one result per completed question", () => {
+    const assessment = finishAccessControl(create(["access-control"]));
+    const tooFew = { ac_001: result, ac_002: result, ac_003: result };
+    expectError(
+      () => recordCategoryResults(assessment, "access-control", tooFew),
+      "incomplete_results",
+    );
+    expectError(
+      () =>
+        recordCategoryResults(assessment, "access-control", {
+          ...accessControlResults,
+          ac_005: result,
+        }),
+      "incomplete_results",
+    );
+  });
+
+  it("discards the category's scores when a question is reopened", () => {
+    let assessment = create(["access-control", "data-protection"]);
+    assessment = recordCategoryResults(
+      finishAccessControl(assessment),
+      "access-control",
+      accessControlResults,
+    );
+    assessment = reopenQuestion(assessment, "ac_002");
+    expect(assessment.categoryResults["access-control"]).toBeUndefined();
+    expect(currentQuestion(assessment, "access-control")).toBe("ac_002");
   });
 });

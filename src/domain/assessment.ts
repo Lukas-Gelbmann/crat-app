@@ -2,7 +2,6 @@ import { catalog, getCategoryOfQuestion } from "./catalog";
 import {
   activateThread,
   applyEvaluation,
-  completeThread,
   createThread,
   markNotApplicable,
   reopenThread,
@@ -10,19 +9,28 @@ import {
   submitAnswer,
   type Evaluation,
   type QuestionThread,
-  type ThreadResult,
   type ThreadStatus,
 } from "./thread";
-import type { CategoryId, QuestionId, UserId } from "./types";
+import type { CategoryId, QuestionId, Score, UserId } from "./types";
+
+// LLM assessment of one answered question, produced when its category is scored.
+export type QuestionResult = {
+  finalAnswer: string;
+  notes: string;
+  score: Score;
+};
 
 // Each category is one shared chat room: everyone responsible for it works
 // through its questions strictly in order, one current question at a time.
+// Once all its questions are done, the category is scored as a whole.
 export type Assessment = {
   id: string;
   organizationId: string;
   // Selected categories, in catalog order.
   categoryIds: CategoryId[];
   threads: Record<QuestionId, QuestionThread>;
+  // Results per completed question, present once the category is scored.
+  categoryResults: Partial<Record<CategoryId, Record<QuestionId, QuestionResult>>>;
 };
 
 export type Progress = Record<ThreadStatus, number> & {
@@ -37,7 +45,9 @@ export class AssessmentError extends Error {
       | "unknown_category"
       | "no_categories"
       | "unknown_question"
-      | "not_current",
+      | "not_current"
+      | "category_not_finished"
+      | "incomplete_results",
     message: string,
   ) {
     super(message);
@@ -75,6 +85,7 @@ export function createAssessment(input: {
     organizationId: input.organizationId,
     categoryIds: categories.map((c) => c.id),
     threads,
+    categoryResults: {},
   };
 }
 
@@ -152,16 +163,6 @@ export function applyQuestionEvaluation(
   );
 }
 
-export function completeQuestion(
-  assessment: Assessment,
-  questionId: QuestionId,
-  result: ThreadResult,
-): Assessment {
-  return updateCurrent(assessment, questionId, (thread) =>
-    completeThread(thread, result),
-  );
-}
-
 export function skipQuestion(
   assessment: Assessment,
   questionId: QuestionId,
@@ -188,12 +189,72 @@ export function markQuestionNotApplicable(
   );
 }
 
-// Reopening works on any finished question; it rejoins the queue as open.
+// Reopening works on any finished question; it rejoins the queue as open and
+// discards the category's scores, which are recalculated once it is done again.
 export function reopenQuestion(
   assessment: Assessment,
   questionId: QuestionId,
 ): Assessment {
-  return setThread(assessment, reopenThread(getThread(assessment, questionId)));
+  const reopened = setThread(
+    assessment,
+    reopenThread(getThread(assessment, questionId)),
+  );
+  const categoryResults = { ...reopened.categoryResults };
+  delete categoryResults[categoryOf(questionId)];
+  return { ...reopened, categoryResults };
+}
+
+// A category is finished when every question is completed or not applicable.
+export function isCategoryFinished(
+  assessment: Assessment,
+  categoryId: CategoryId,
+): boolean {
+  return currentQuestion(assessment, categoryId) === undefined;
+}
+
+// Finished categories that still need scoring, e.g. after a failed LLM call.
+export function categoriesAwaitingScoring(assessment: Assessment): CategoryId[] {
+  return assessment.categoryIds.filter(
+    (id) => isCategoryFinished(assessment, id) && !assessment.categoryResults[id],
+  );
+}
+
+// Stores the scores of a finished category: one result per completed question
+// (not-applicable questions are not scored).
+export function recordCategoryResults(
+  assessment: Assessment,
+  categoryId: CategoryId,
+  results: Record<QuestionId, QuestionResult>,
+): Assessment {
+  if (!isCategoryFinished(assessment, categoryId)) {
+    throw new AssessmentError(
+      "category_not_finished",
+      `Category ${categoryId} still has open questions`,
+    );
+  }
+  const expected = questionIds(assessment, [categoryId]).filter(
+    (id) => getThread(assessment, id).status === "completed",
+  );
+  const given = Object.keys(results);
+  if (
+    given.length !== expected.length ||
+    !expected.every((id) => id in results)
+  ) {
+    throw new AssessmentError(
+      "incomplete_results",
+      `Expected results for ${expected.join(", ")}, got ${given.join(", ")}`,
+    );
+  }
+  const trimmed = Object.fromEntries(
+    Object.entries(results).map(([id, result]) => [
+      id,
+      { ...result, finalAnswer: result.finalAnswer.trim(), notes: result.notes.trim() },
+    ]),
+  );
+  return {
+    ...assessment,
+    categoryResults: { ...assessment.categoryResults, [categoryId]: trimmed },
+  };
 }
 
 export function getProgress(
@@ -217,9 +278,11 @@ export function getProgress(
   return progress;
 }
 
+// Complete when every question is done and every category is scored.
 export function isAssessmentComplete(assessment: Assessment): boolean {
-  const progress = getProgress(assessment);
-  return progress.done === progress.total;
+  return assessment.categoryIds.every(
+    (id) => isCategoryFinished(assessment, id) && assessment.categoryResults[id],
+  );
 }
 
 function updateCurrent(
@@ -228,8 +291,7 @@ function updateCurrent(
   transition: (thread: QuestionThread) => QuestionThread,
 ): Assessment {
   const thread = getThread(assessment, questionId);
-  const categoryId = getCategoryOfQuestion(questionId)!.id;
-  const current = currentQuestion(assessment, categoryId);
+  const current = currentQuestion(assessment, categoryOf(questionId));
   if (current !== questionId) {
     throw new AssessmentError(
       "not_current",
@@ -237,6 +299,11 @@ function updateCurrent(
     );
   }
   return setThread(assessment, transition(thread));
+}
+
+// Only called after getThread, so the question is known to exist.
+function categoryOf(questionId: QuestionId): CategoryId {
+  return getCategoryOfQuestion(questionId)!.id;
 }
 
 function setThread(assessment: Assessment, thread: QuestionThread): Assessment {

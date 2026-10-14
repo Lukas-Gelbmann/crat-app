@@ -4,7 +4,6 @@ import {
   ThreadError,
   activateThread,
   applyEvaluation,
-  completeThread,
   createThread,
   followUpCount,
   markNotApplicable,
@@ -12,12 +11,10 @@ import {
   skipThread,
   submitAnswer,
   type QuestionThread,
-  type ThreadResult,
 } from "./thread";
 
 const alice = "alice";
 const bob = "bob";
-const result: ThreadResult = { finalAnswer: "MFA everywhere", notes: "", score: 4 };
 
 function active(): QuestionThread {
   return activateThread(createThread("ac_002"));
@@ -46,10 +43,8 @@ describe("question thread", () => {
     ]);
 
     thread = applyEvaluation(thread, { decision: "complete" });
-    expect(thread).toMatchObject({ pending: "finalization" });
-
-    thread = completeThread(thread, result);
-    expect(thread).toMatchObject({ status: "completed", result });
+    expect(thread.status).toBe("completed");
+    expect(thread.exchanges).toHaveLength(1);
   });
 
   it("lets different users answer follow-ups in the shared room", () => {
@@ -68,7 +63,7 @@ describe("question thread", () => {
     thread = submitAnswer(thread, bob, "Yes, for admins.");
     expect(thread.exchanges.map((e) => e.answer?.authorId)).toEqual([alice, bob]);
     thread = applyEvaluation(thread, { decision: "complete" });
-    expect(thread).toMatchObject({ pending: "finalization" });
+    expect(thread.status).toBe("completed");
   });
 
   it("rejects a second answer while the first is being evaluated", () => {
@@ -92,7 +87,7 @@ describe("question thread", () => {
       decision: "needs_follow_up",
       followUpQuestion: "one more?",
     });
-    expect(thread).toMatchObject({ pending: "finalization" });
+    expect(thread.status).toBe("completed");
     expect(followUpCount(thread)).toBe(MAX_FOLLOW_UPS);
   });
 
@@ -146,13 +141,13 @@ describe("question thread", () => {
     expectError(() => submitAnswer(open, alice, "x"), "invalid_transition");
     expectError(() => activateThread(active()), "invalid_transition");
     expectError(() => applyEvaluation(active(), { decision: "complete" }), "invalid_transition");
-    expectError(() => completeThread(active(), result), "invalid_transition");
     expectError(() => reopenThread(open), "invalid_transition");
   });
 
   it("reopens finished threads from scratch", () => {
-    let thread = submitAnswer(active(), alice, "x");
-    thread = completeThread(applyEvaluation(thread, { decision: "complete" }), result);
+    const thread = applyEvaluation(submitAnswer(active(), alice, "x"), {
+      decision: "complete",
+    });
     expect(reopenThread(thread)).toEqual(createThread("ac_002"));
     expect(
       reopenThread(markNotApplicable(createThread("ac_002"), alice, "n/a")),

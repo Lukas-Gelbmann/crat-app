@@ -28,11 +28,13 @@
 - Each category is one shared chat room: everyone responsible for it works through
   its questions strictly in order. Skipped questions come back after the open ones.
 - `thread.ts`: one state machine per question (open → active → completed, plus
-  skipped / not applicable). Follow-ups are capped at `MAX_FOLLOW_UPS` in code, not
-  by the LLM.
+  skipped / not applicable). A question completes when the completeness check
+  accepts the answer. Follow-ups are capped at `MAX_FOLLOW_UPS` in code, not by the LLM.
 - `assessment.ts`: selected categories with one thread per question. Change state
   only via its commands (`answerQuestion`, `skipQuestion`, ...); they reject any
   question that isn't the category's `currentQuestion`.
+- Scoring happens per category, only after all its questions are done
+  (`recordCategoryResults`). Reopening a question discards its category's scores.
 - `scoring.ts`: `toScore` for untrusted (LLM) scores; averages exclude not-applicable
   questions, categories weigh equally overall.
 
