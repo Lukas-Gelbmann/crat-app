@@ -14,6 +14,12 @@
 - New logic needs tests.
 - Small PRs: one feature per branch.
 - No secrets in code, use environment variables only.
+- Read env vars through `getServerEnv()` (`src/env.ts`), never `process.env` directly.
+  New variables go into the zod schema and `.env.example`.
+- No hard-coded UI text: add strings to both `src/i18n/dictionaries/en.json` and
+  `de.json`. Server Components use `getCurrentDictionary()` from `src/i18n/server.ts`;
+  Client Components receive strings as props.
+- All pages live under `src/app/[lang]/`.
 
 ## Workflow per feature
 `main` is protected: changes go in via PR only, and the CI check `test` must pass before merging.

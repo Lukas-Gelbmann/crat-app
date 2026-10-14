@@ -33,7 +33,15 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000>.
+Open <http://localhost:3000>. You are redirected to `/en` or `/de` based on your
+browser language.
+
+### Configuration
+
+Copy `.env.example` to `.env.local` and adjust it. All variables are optional; the
+defaults point to a local [Ollama](https://ollama.com) instance
+(`http://localhost:11434/v1`, model `llama3.1:8b`). Variables are validated at startup
+in `src/env.ts`.
 
 ## Scripts
 
