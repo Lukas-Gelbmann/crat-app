@@ -43,6 +43,15 @@ defaults point to a local [Ollama](https://ollama.com) instance
 (`http://localhost:11434/v1`, model `llama3.1:8b`). Variables are validated at startup
 in `src/env.ts`.
 
+Supported LLM providers:
+
+| Provider | Settings |
+| --- | --- |
+| Ollama (default) | `LLM_BASE_URL=http://localhost:11434/v1`, `LLM_MODEL=llama3.1:8b` |
+| LM Studio | `LLM_BASE_URL=http://localhost:1234/v1`, `LLM_MODEL=<loaded model>` |
+| OpenRouter | `LLM_BASE_URL=https://openrouter.ai/api/v1`, `LLM_MODEL=<model>`, `LLM_API_KEY=<key>` |
+| Claude | `LLM_PROVIDER=anthropic`, `ANTHROPIC_API_KEY=<key>` (model defaults to `claude-opus-5-5`) |
+
 ## Scripts
 
 | Command | Description |
@@ -51,6 +60,7 @@ in `src/env.ts`.
 | `npm run build` / `npm start` | Build and run the production version |
 | `npm run check` | Lint, typecheck, unit tests and build (run before every PR) |
 | `npm run test` | Unit tests |
+| `npm run test:llm` | Check prompts against the configured real LLM (opt-in, not in CI) |
 | `npx playwright test` | End-to-end tests (starts the dev server) |
 
 ## Contributing

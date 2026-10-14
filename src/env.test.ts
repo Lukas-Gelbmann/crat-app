@@ -44,4 +44,27 @@ describe("parseServerEnv", () => {
         .LLM_PROVIDER,
     ).toBe("anthropic");
   });
+
+  it("defaults the model per provider", () => {
+    expect(
+      parseServerEnv({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "key" })
+        .LLM_MODEL,
+    ).toBe("claude-opus-5-5");
+    expect(
+      parseServerEnv({
+        LLM_PROVIDER: "anthropic",
+        ANTHROPIC_API_KEY: "key",
+        LLM_MODEL: "claude-sonnet-5-5",
+      }).LLM_MODEL,
+    ).toBe("claude-sonnet-5-5");
+  });
+
+  it("accepts an API key for OpenAI-compatible endpoints like OpenRouter", () => {
+    const env = parseServerEnv({
+      LLM_BASE_URL: "https://openrouter.ai/api/v1",
+      LLM_MODEL: "meta-llama/llama-3.1-8b-instruct",
+      LLM_API_KEY: "sk-or-key",
+    });
+    expect(env.LLM_API_KEY).toBe("sk-or-key");
+  });
 });

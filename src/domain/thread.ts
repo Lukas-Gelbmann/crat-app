@@ -1,4 +1,4 @@
-import type { QuestionId, Score, UserId } from "./types";
+import type { QuestionId, UserId } from "./types";
 
 export const MAX_FOLLOW_UPS = 3;
 
@@ -11,26 +11,21 @@ export type Exchange = {
   answer: Answer | null;
 };
 
-export type ThreadResult = {
-  finalAnswer: string;
-  notes: string;
-  score: Score;
-};
-
 export type Evaluation =
   | { decision: "complete" }
   | { decision: "needs_follow_up"; followUpQuestion: string };
 
 // "active" is the question currently discussed in its category's chat room.
-// `pending` says what happens next: someone answers, or the answer is
-// evaluated / finalized (LLM steps).
+// `pending` says what happens next: someone answers, or the answer is checked
+// for completeness (LLM step). Scoring happens per category once all of its
+// questions are done (see assessment.ts).
 export type QuestionThread =
   | { status: "open"; questionId: QuestionId; exchanges: Exchange[] }
   | {
       status: "active";
       questionId: QuestionId;
       exchanges: Exchange[];
-      pending: "answer" | "evaluation" | "finalization";
+      pending: "answer" | "evaluation";
     }
   | {
       status: "skipped";
@@ -46,12 +41,7 @@ export type QuestionThread =
       reason: string;
       decidedBy: UserId;
     }
-  | {
-      status: "completed";
-      questionId: QuestionId;
-      exchanges: Exchange[];
-      result: ThreadResult;
-    };
+  | { status: "completed"; questionId: QuestionId; exchanges: Exchange[] };
 
 export type ThreadStatus = QuestionThread["status"];
 
@@ -107,8 +97,9 @@ export function submitAnswer(
   return { ...current, exchanges, pending: "evaluation" };
 }
 
-// Applies the completeness check. Follow-ups beyond MAX_FOLLOW_UPS are ignored
-// so the interview always terminates, whatever the evaluator returns.
+// Applies the completeness check: either asks a follow-up or completes the
+// question. Follow-ups beyond MAX_FOLLOW_UPS are ignored so the interview always
+// terminates, whatever the evaluator returns.
 export function applyEvaluation(
   thread: QuestionThread,
   evaluation: Evaluation,
@@ -128,19 +119,10 @@ export function applyEvaluation(
       pending: "answer",
     };
   }
-  return { ...current, pending: "finalization" };
-}
-
-export function completeThread(
-  thread: QuestionThread,
-  result: ThreadResult,
-): QuestionThread {
-  const current = requirePending(thread, "finalization", "complete");
   return {
     status: "completed",
     questionId: current.questionId,
     exchanges: current.exchanges,
-    result: { ...result, finalAnswer: result.finalAnswer.trim() },
   };
 }
 

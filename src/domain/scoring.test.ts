@@ -2,18 +2,38 @@ import { describe, it, expect } from "vitest";
 import {
   answerQuestion,
   applyQuestionEvaluation,
-  completeQuestion,
   createAssessment,
   markQuestionNotApplicable,
+  questionIds,
+  recordCategoryResults,
   type Assessment,
 } from "./assessment";
 import { categoryScore, overallScore, toScore } from "./scoring";
 import type { Score } from "./types";
 
-function score(assessment: Assessment, questionId: string, value: Score) {
-  let a = answerQuestion(assessment, questionId, "alice", "answer");
-  a = applyQuestionEvaluation(a, questionId, { decision: "complete" });
-  return completeQuestion(a, questionId, { finalAnswer: "answer", notes: "", score: value });
+// Finishes every question of a category and records the given scores;
+// questions without a score are marked not applicable.
+function scoreCategory(
+  assessment: Assessment,
+  categoryId: string,
+  scores: Record<string, Score>,
+): Assessment {
+  let a = assessment;
+  for (const id of questionIds(a, [categoryId])) {
+    if (id in scores) {
+      a = answerQuestion(a, id, "alice", "answer");
+      a = applyQuestionEvaluation(a, id, { decision: "complete" });
+    } else {
+      a = markQuestionNotApplicable(a, id, "alice", "n/a");
+    }
+  }
+  const results = Object.fromEntries(
+    Object.entries(scores).map(([id, score]) => [
+      id,
+      { finalAnswer: "answer", notes: "", score },
+    ]),
+  );
+  return recordCategoryResults(a, categoryId, results);
 }
 
 function create(): Assessment {
@@ -46,43 +66,54 @@ describe("toScore", () => {
 });
 
 describe("categoryScore", () => {
-  it("is null before anything is scored", () => {
-    expect(categoryScore(create(), "access-control")).toBeNull();
+  it("is null until the category is scored", () => {
+    let assessment = create();
+    expect(categoryScore(assessment, "access-control")).toBeNull();
+    assessment = answerQuestion(assessment, "ac_001", "alice", "answer");
+    assessment = applyQuestionEvaluation(assessment, "ac_001", { decision: "complete" });
+    expect(categoryScore(assessment, "access-control")).toBeNull();
   });
 
-  it("averages completed questions and excludes not applicable ones", () => {
-    let assessment = create();
-    assessment = score(assessment, "ac_001", 4);
-    assessment = score(assessment, "ac_002", 2);
-    assessment = score(assessment, "ac_003", 3);
-    assessment = markQuestionNotApplicable(assessment, "ac_004", "alice", "n/a");
+  it("averages scored questions; not applicable ones have no score", () => {
+    const assessment = scoreCategory(create(), "access-control", {
+      ac_001: 4,
+      ac_002: 2,
+      ac_003: 3,
+    });
     expect(categoryScore(assessment, "access-control")).toBe(3);
   });
 
   it("rounds to one decimal", () => {
-    let assessment = create();
-    assessment = score(assessment, "ac_001", 4);
-    assessment = score(assessment, "ac_002", 4);
-    assessment = score(assessment, "ac_003", 5);
+    const assessment = scoreCategory(create(), "access-control", {
+      ac_001: 4,
+      ac_002: 4,
+      ac_003: 5,
+    });
     expect(categoryScore(assessment, "access-control")).toBe(4.3);
+  });
+
+  it("is null for a category where every question is not applicable", () => {
+    const assessment = scoreCategory(create(), "access-control", {});
+    expect(categoryScore(assessment, "access-control")).toBeNull();
   });
 });
 
 describe("overallScore", () => {
   it("weighs categories equally", () => {
-    let assessment = create();
-    // access-control: 5 questions averaging 2
-    for (const id of ["ac_001", "ac_002", "ac_003", "ac_004", "ac_005"]) {
-      assessment = score(assessment, id, 2);
-    }
-    // data-protection: 1 question with 5
-    assessment = score(assessment, "dp_001", 5);
+    let assessment = scoreCategory(create(), "access-control", {
+      ac_001: 2,
+      ac_002: 2,
+      ac_003: 2,
+      ac_004: 2,
+      ac_005: 2,
+    });
+    assessment = scoreCategory(assessment, "data-protection", { dp_001: 5 });
     expect(overallScore(assessment)).toBe(3.5);
   });
 
-  it("ignores categories without scores and is null when nothing is scored", () => {
+  it("ignores unscored categories and is null when nothing is scored", () => {
     expect(overallScore(create())).toBeNull();
-    const assessment = score(create(), "ac_001", 4);
+    const assessment = scoreCategory(create(), "access-control", { ac_001: 4 });
     expect(overallScore(assessment)).toBe(4);
   });
 });
